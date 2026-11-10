@@ -15,6 +15,8 @@ HOST_PIN=1234 WIFE_PIN=5678 .venv/bin/python -m uvicorn app.main:app --port 8088
 .venv/bin/python -m pytest -q
 ```
 
+Frontend: no build step. `app/static/js/` holds native ES modules: `main.js` is the shell with a `TABS` registry (add a screen = add a view in `js/views/` + one entry), `ui.js` the shared components (bottom sheet, confirm, toast, buttons, fields, chips, stepper), and `style.css` a token-based design system (light/dark via tokens, `@layer` ordered).
+
 Data lives in `data/evenings.db` (override with `DB_PATH`). `TZ` should match your timezone: times are stored as local wall-clock.
 
 ## Security

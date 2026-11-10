@@ -194,3 +194,12 @@ def test_refuses_to_start_without_pins(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="HOST_PIN"):
         with TestClient(app):
             pass
+
+
+def test_frontend_assets_served_fresh():
+    with TestClient(app) as anon:
+        page = anon.get("/")
+        assert page.status_code == 200 and 'type="module" src="/static/js/main.js"' in page.text
+        for path in ("/static/js/main.js", "/static/js/views/calendar.js", "/static/style.css"):
+            r = anon.get(path)
+            assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", path

@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Evenings</title>
-<meta name="theme-color" content="#faf8f4">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f4ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Evenings">
@@ -13,11 +15,12 @@
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="modulepreload" href="/static/js/main.js">
 </head>
 <body>
 <div id="app"></div>
-<dialog id="sheet"></dialog>
+<dialog id="sheet" class="sheet" aria-modal="true"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

@@ -559,4 +559,12 @@ def index():
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class _Static(StaticFiles):
+    # Revalidate on every load (cheap 304s via ETag) so a deploy never mixes old and new JS modules.
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
+app.mount("/static", _Static(directory=STATIC), name="static")
