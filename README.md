@@ -17,6 +17,13 @@ HOST_PIN=1234 WIFE_PIN=5678 .venv/bin/python -m uvicorn app.main:app --port 8088
 
 Data lives in `data/evenings.db` (override with `DB_PATH`). `TZ` should match your timezone: times are stored as local wall-clock.
 
+## Security
+
+- `HOST_PIN` and `WIFE_PIN` are required (at least 4 characters); the app refuses to start without them.
+- 5 wrong PINs for a role locks that role out for 15 minutes.
+- Push subscriptions are only accepted from real push services (FCM, Mozilla, Apple, Windows) over HTTPS.
+- Meant to be reached over Tailscale only; there is no public exposure.
+
 ## Deploy (homelab, Flux + Tailscale)
 
 1. Push to GitHub; `.github/workflows/image.yaml` publishes `ghcr.io/thevivotran/evenings:main-<ts>-<sha>`.

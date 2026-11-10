@@ -6,13 +6,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "t.db")
-os.environ["HOST_PIN"] = "h"
-os.environ["WIFE_PIN"] = "w"
+os.environ["HOST_PIN"] = "hhhh"
+os.environ["WIFE_PIN"] = "wwww"
 
 from app import push  # noqa: E402
 from app.main import app  # noqa: E402
 
 push.notify = lambda *a, **k: None  # no network in tests
+import app.db as db  # noqa: E402
 import app.main as m  # noqa: E402
 
 m.push.notify = lambda *a, **k: None
@@ -27,8 +28,8 @@ def ts(days):
 @pytest.fixture(scope="module")
 def clients():
     with TestClient(app) as host, TestClient(app) as wife:
-        assert host.post("/api/login", json={"role": "host", "pin": "h"}).status_code == 200
-        assert wife.post("/api/login", json={"role": "wife", "pin": "w"}).status_code == 200
+        assert host.post("/api/login", json={"role": "host", "pin": "hhhh"}).status_code == 200
+        assert wife.post("/api/login", json={"role": "wife", "pin": "wwww"}).status_code == 200
         yield host, wife
 
 
@@ -105,7 +106,8 @@ def test_ics_feed(clients):
 def test_push_subscribe(clients):
     _, wife = clients
     assert wife.get("/api/push/key").json()["key"]
-    assert wife.post("/api/push/subscribe", json={"subscription": {"endpoint": "https://x/y", "keys": {}}}).status_code == 200
+    ok = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {}}
+    assert wife.post("/api/push/subscribe", json={"subscription": ok}).status_code == 200
 
 
 def test_checked_in_future_gathering_counts_as_held(clients):
@@ -118,3 +120,60 @@ def test_checked_in_future_gathering_counts_as_held(clients):
     host.post(f"/api/gatherings/{g['id']}/start")
     after = next(x for x in wife.get("/api/stats").json()["groups"] if x["name"] == "Early birds")
     assert after["meetings"] == 1 and after["days_since"] == 0 and not after["overdue"]
+
+
+# ---------- security hardening ----------
+
+def test_ics_text_cannot_inject_calendar_lines():
+    from app.main import _ics_escape
+
+    out = _ics_escape("Beers\r\nEND:VEVENT\r\nBEGIN:VEVENT\x00\x1b")
+    assert "\r" not in out and "\n" not in out and "\x00" not in out and "\x1b" not in out
+    assert out == "Beers\\nEND:VEVENT\\nBEGIN:VEVENT"
+
+
+@pytest.mark.parametrize("endpoint", [
+    "http://fcm.googleapis.com/x",          # not https
+    "https://169.254.169.254/latest",       # cloud metadata
+    "https://localhost:8088/api/x",         # internal service
+    "https://evil.example.com/push",        # not a push service
+    "https://fcm.googleapis.com.evil.io/x", # look-alike host
+    "https://user@fcm.googleapis.com/x",    # credentials in URL
+    "https://fcm.googleapis.com:8443/x",    # odd port
+])
+def test_push_rejects_non_push_endpoints(clients, endpoint):
+    _, wife = clients
+    assert wife.post("/api/push/subscribe", json={"subscription": {"endpoint": endpoint}}).status_code == 422
+
+
+def test_push_accepts_real_services(clients):
+    _, wife = clients
+    for ep in ("https://updates.push.services.mozilla.com/wpush/v2/x", "https://web.push.apple.com/abc", "https://wns2-par02p.notify.windows.com/x"):
+        assert wife.post("/api/push/subscribe", json={"subscription": {"endpoint": ep}}).status_code == 200
+
+
+def test_role_cannot_take_over_other_roles_push_endpoint(clients):
+    host, wife = clients
+    ep = {"endpoint": "https://fcm.googleapis.com/fcm/send/shared"}
+    assert wife.post("/api/push/subscribe", json={"subscription": ep}).status_code == 200
+    assert host.post("/api/push/subscribe", json={"subscription": ep}).status_code == 409
+
+
+def test_login_locks_out_after_repeated_failures(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "lock.db"))
+    monkeypatch.setattr(m.time, "sleep", lambda *_: None)
+    with TestClient(app) as c:
+        for _ in range(m.MAX_FAILS):
+            assert c.post("/api/login", json={"role": "wife", "pin": "nope"}).status_code == 401
+        # even the correct PIN is refused while locked out
+        assert c.post("/api/login", json={"role": "wife", "pin": "wwww"}).status_code == 429
+        # the other role is unaffected
+        assert c.post("/api/login", json={"role": "host", "pin": "hhhh"}).status_code == 200
+
+
+def test_refuses_to_start_without_pins(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "nopin.db"))
+    monkeypatch.setattr(m, "PINS", {"host": "", "wife": "wwww"})
+    with pytest.raises(RuntimeError, match="HOST_PIN"):
+        with TestClient(app):
+            pass

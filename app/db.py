@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS push_subs (
     data TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS login_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    ts INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_gatherings_start ON gatherings(start);
 CREATE INDEX IF NOT EXISTS idx_beer_log_g ON beer_log(gathering_id);
 """

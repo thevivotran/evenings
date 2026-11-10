@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import threading
+from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
@@ -10,6 +11,21 @@ from pywebpush import WebPushException, webpush
 from . import db
 
 log = logging.getLogger("push")
+
+
+# Only real browser push services are ever contacted, so a forged subscription
+# can't turn the server into a request proxy for internal addresses.
+PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com")
+PUSH_SUFFIXES = (".push.apple.com", ".notify.windows.com", ".push.services.mozilla.com")
+
+
+def is_allowed_endpoint(endpoint: str) -> bool:
+    try:
+        u = urlparse(endpoint)
+    except ValueError:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and u.port in (None, 443) and not u.username and (host in PUSH_HOSTS or host.endswith(PUSH_SUFFIXES))
 
 
 def vapid_keys() -> tuple[str, str]:

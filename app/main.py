@@ -18,7 +18,9 @@ from . import db, push
 
 logging.basicConfig(level=logging.INFO)
 STATIC = Path(__file__).parent / "static"
-PINS = {"host": os.environ.get("HOST_PIN", "1111"), "wife": os.environ.get("WIFE_PIN", "2222")}
+PINS = {"host": os.environ.get("HOST_PIN", ""), "wife": os.environ.get("WIFE_PIN", "")}
+MIN_PIN_LEN = 4
+MAX_FAILS, FAIL_WINDOW = 5, 15 * 60  # per role: 5 wrong PINs locks that role out for 15 minutes
 CONTACT = os.environ.get("VAPID_CONTACT", "mailto:admin@example.com")
 SESSION_TTL = 60 * 60 * 24 * 180
 FMT = "%Y-%m-%dT%H:%M"
@@ -30,8 +32,9 @@ async def lifespan(_: FastAPI):
         db.ensure_secret(c, "session_secret")
         db.ensure_secret(c, "ics_key")
     push.vapid_keys()
-    if os.environ.get("HOST_PIN") is None or os.environ.get("WIFE_PIN") is None:
-        logging.warning("HOST_PIN/WIFE_PIN not set; using insecure defaults")
+    bad = [r for r, v in PINS.items() if len(v) < MIN_PIN_LEN]
+    if bad and os.environ.get("ALLOW_INSECURE_DEV") != "1":
+        raise RuntimeError(f"Set {' and '.join(r.upper() + '_PIN' for r in bad)} (at least {MIN_PIN_LEN} characters) before starting")
     yield
 
 
@@ -81,7 +84,16 @@ class Login(BaseModel):
 
 @app.post("/api/login")
 def login(body: Login, response: Response):
-    if not hmac.compare_digest(body.pin, PINS[body.role]):
+    now = int(time.time())
+    with db.session() as c:
+        c.execute("DELETE FROM login_failures WHERE ts < ?", (now - FAIL_WINDOW,))
+        fails = c.execute("SELECT COUNT(*) FROM login_failures WHERE role=?", (body.role,)).fetchone()[0]
+        if fails >= MAX_FAILS:
+            raise HTTPException(429, "Too many wrong PINs. Try again in a few minutes.")
+        ok = len(PINS[body.role]) >= MIN_PIN_LEN and hmac.compare_digest(body.pin, PINS[body.role])
+        if not ok:
+            c.execute("INSERT INTO login_failures(role, ts) VALUES (?,?)", (body.role, now))
+    if not ok:
         time.sleep(0.5)
         raise HTTPException(401, "Wrong PIN")
     exp = int(time.time()) + SESSION_TTL
@@ -467,11 +479,14 @@ class Sub(BaseModel):
 @app.post("/api/push/subscribe")
 def push_subscribe(body: Sub, role: str = Depends(require())):
     endpoint = body.subscription.get("endpoint")
-    if not endpoint:
-        raise HTTPException(422, "Missing endpoint")
+    if not isinstance(endpoint, str) or not push.is_allowed_endpoint(endpoint):
+        raise HTTPException(422, "Unsupported push endpoint")
     with db.session() as c:
+        owner = c.execute("SELECT role FROM push_subs WHERE endpoint=?", (endpoint,)).fetchone()
+        if owner and owner["role"] != role:
+            raise HTTPException(409, "This device is already registered for the other person")
         c.execute(
-            "INSERT INTO push_subs(endpoint, role, data) VALUES (?,?,?) ON CONFLICT(endpoint) DO UPDATE SET role=excluded.role, data=excluded.data",
+            "INSERT INTO push_subs(endpoint, role, data) VALUES (?,?,?) ON CONFLICT(endpoint) DO UPDATE SET data=excluded.data",
             (endpoint, role, json.dumps(body.subscription)),
         )
     return {"ok": True}
@@ -486,6 +501,8 @@ def push_test(role: str = Depends(require())):
 # ---------- iCal feed (for the wife's own calendar app) ----------
 
 def _ics_escape(s: str) -> str:
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = "".join(ch for ch in s if ch == "\n" or ch >= " " and ch != "\x7f")  # no control chars: they could inject iCal lines
     return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
