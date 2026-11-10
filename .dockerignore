@@ -1,0 +1,7 @@
+.venv
+.claude
+data
+tests
+deploy
+__pycache__
+*.db*

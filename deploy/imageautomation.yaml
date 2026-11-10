@@ -1,0 +1,24 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: evenings
+  namespace: flux-system
+spec:
+  image: ghcr.io/thevivotran/evenings
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: evenings
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: evenings
+  filterTags:
+    pattern: '^main-(?P<ts>\d{8}-\d{6})-.+'
+    extract: '$ts'
+  policy:
+    alphabetical:
+      order: asc
