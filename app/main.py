@@ -20,9 +20,10 @@ logging.basicConfig(level=logging.INFO)
 STATIC = Path(__file__).parent / "static"
 PINS = {"host": os.environ.get("HOST_PIN", ""), "wife": os.environ.get("WIFE_PIN", "")}
 MIN_PIN_LEN = 4
-# Wrong PINs: 5 per (client, role) locks that client out of that role for 15 min, so a stranger can't lock
-# your wife out; a higher per-role cap is the backstop if someone rotates their address.
-MAX_FAILS, MAX_FAILS_ROLE, FAIL_WINDOW = 5, 50, 15 * 60
+# Wrong PINs: 5 per role locks sign-in for that role for 15 minutes (failures expire). Client headers such as
+# X-Forwarded-For are deliberately not trusted for this. Existing sessions last 180 days, so the wife rarely
+# signs in; the host is alerted by push when a lock triggers.
+MAX_FAILS, FAIL_WINDOW = 5, 15 * 60
 CONTACT = os.environ.get("VAPID_CONTACT", "mailto:admin@example.com")
 SESSION_TTL = 60 * 60 * 24 * 180
 FMT = "%Y-%m-%dT%H:%M"
@@ -84,24 +85,22 @@ class Login(BaseModel):
     pin: str
 
 
-def _client_id(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    return (fwd or (request.client.host if request.client else "unknown"))[:64]
-
-
 @app.post("/api/login")
-def login(body: Login, request: Request, response: Response):
-    now, client = int(time.time()), _client_id(request)
+def login(body: Login, response: Response):
+    now = int(time.time())
+    locked_now = False
     with db.session() as c:
         c.execute("DELETE FROM login_failures WHERE ts < ?", (now - FAIL_WINDOW,))
-        mine = c.execute("SELECT COUNT(*) FROM login_failures WHERE role=? AND client=?", (body.role, client)).fetchone()[0]
-        total = c.execute("SELECT COUNT(*) FROM login_failures WHERE role=?", (body.role,)).fetchone()[0]
-        if mine >= MAX_FAILS or total >= MAX_FAILS_ROLE:
+        fails = c.execute("SELECT COUNT(*) FROM login_failures WHERE role=?", (body.role,)).fetchone()[0]
+        if fails >= MAX_FAILS:
             raise HTTPException(429, "Too many wrong PINs. Try again in a few minutes.")
         ok = len(PINS[body.role]) >= MIN_PIN_LEN and hmac.compare_digest(body.pin, PINS[body.role])
         if not ok:
-            c.execute("INSERT INTO login_failures(role, client, ts) VALUES (?,?,?)", (body.role, client, now))
+            c.execute("INSERT INTO login_failures(role, ts) VALUES (?,?)", (body.role, now))
+            locked_now = fails + 1 >= MAX_FAILS
     if not ok:
+        if locked_now:
+            push.notify("host", "Sign-in locked", f"{MAX_FAILS} wrong PINs for the {body.role} login. It unlocks in {FAIL_WINDOW // 60} minutes.", "/", CONTACT)
         time.sleep(0.5)
         raise HTTPException(401, "Wrong PIN")
     exp = int(time.time()) + SESSION_TTL
