@@ -140,6 +140,12 @@ def test_ics_text_cannot_inject_calendar_lines():
     "https://fcm.googleapis.com.evil.io/x", # look-alike host
     "https://user@fcm.googleapis.com/x",    # credentials in URL
     "https://fcm.googleapis.com:8443/x",    # odd port
+    "https://fcm.googleapis.com\\@evil.com/x",    # backslash: parsers disagree on the host
+    "https://evil.com#@fcm.googleapis.com/x",    # fragment trick
+    "https://evil.com\\.fcm.googleapis.com/x",
+    "https://fcm.googleapis.com%2eevil.com/x",   # escaped dot in host
+    "https://fcm.googleapis.com\t.evil.com/x",   # control character
+    "https://fcm.googleapis.com /x",             # whitespace
 ])
 def test_push_rejects_non_push_endpoints(clients, endpoint):
     _, wife = clients
@@ -148,7 +154,7 @@ def test_push_rejects_non_push_endpoints(clients, endpoint):
 
 def test_push_accepts_real_services(clients):
     _, wife = clients
-    for ep in ("https://updates.push.services.mozilla.com/wpush/v2/x", "https://web.push.apple.com/abc", "https://wns2-par02p.notify.windows.com/x"):
+    for ep in ("https://updates.push.services.mozilla.com/wpush/v2/x", "https://web.push.apple.com/abc", "https://wns2-par02p.notify.windows.com/w/?token=BQYAAA%2bAbc%3d"):
         assert wife.post("/api/push/subscribe", json={"subscription": {"endpoint": ep}}).status_code == 200
 
 
@@ -159,16 +165,27 @@ def test_role_cannot_take_over_other_roles_push_endpoint(clients):
     assert host.post("/api/push/subscribe", json={"subscription": ep}).status_code == 409
 
 
-def test_login_locks_out_after_repeated_failures(monkeypatch, tmp_path):
+def test_login_locks_out_a_client_after_repeated_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "lock.db"))
     monkeypatch.setattr(m.time, "sleep", lambda *_: None)
     with TestClient(app) as c:
         for _ in range(m.MAX_FAILS):
-            assert c.post("/api/login", json={"role": "wife", "pin": "nope"}).status_code == 401
-        # even the correct PIN is refused while locked out
-        assert c.post("/api/login", json={"role": "wife", "pin": "wwww"}).status_code == 429
-        # the other role is unaffected
-        assert c.post("/api/login", json={"role": "host", "pin": "hhhh"}).status_code == 200
+            assert c.post("/api/login", json={"role": "wife", "pin": "nope"}, headers={"X-Forwarded-For": "100.64.0.9"}).status_code == 401
+        # the attacker is locked out, even with the right PIN...
+        assert c.post("/api/login", json={"role": "wife", "pin": "wwww"}, headers={"X-Forwarded-For": "100.64.0.9"}).status_code == 429
+        # ...but the wife on her own device is NOT locked out by a stranger's guesses
+        assert c.post("/api/login", json={"role": "wife", "pin": "wwww"}, headers={"X-Forwarded-For": "100.64.0.2"}).status_code == 200
+        # the other role is unaffected too
+        assert c.post("/api/login", json={"role": "host", "pin": "hhhh"}, headers={"X-Forwarded-For": "100.64.0.9"}).status_code == 200
+
+
+def test_rotating_addresses_still_hits_role_wide_cap(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "cap.db"))
+    monkeypatch.setattr(m.time, "sleep", lambda *_: None)
+    with TestClient(app) as c:
+        for i in range(m.MAX_FAILS_ROLE):
+            assert c.post("/api/login", json={"role": "wife", "pin": "nope"}, headers={"X-Forwarded-For": f"10.0.{i // 200}.{i % 200}"}).status_code == 401
+        assert c.post("/api/login", json={"role": "wife", "pin": "wwww"}, headers={"X-Forwarded-For": "10.9.9.9"}).status_code == 429
 
 
 def test_refuses_to_start_without_pins(monkeypatch, tmp_path):

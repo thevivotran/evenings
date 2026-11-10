@@ -1,12 +1,15 @@
 import base64
 import json
 import logging
+import re
 import threading
 from urllib.parse import urlparse
 
+import requests
 from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
+from urllib3.util import parse_url
 
 from . import db
 
@@ -20,12 +23,30 @@ PUSH_SUFFIXES = (".push.apple.com", ".notify.windows.com", ".push.services.mozil
 
 
 def is_allowed_endpoint(endpoint: str) -> bool:
+    """Strict check that survives URL-parser differentials (the stdlib and urllib3 must agree)."""
+    if not endpoint.startswith("https://") or len(endpoint) > 2048:
+        return False
+    if "\\" in endpoint or any(ord(ch) <= 32 or ord(ch) == 127 for ch in endpoint):
+        return False
+    authority = re.split(r"[/?#]", endpoint[len("https://"):], maxsplit=1)[0]
+    if any(ch in authority for ch in "%@\\"):  # escapes/userinfo have no place in a push host
+        return False
     try:
-        u = urlparse(endpoint)
-    except ValueError:
+        u, p = urlparse(endpoint), parse_url(endpoint)
+    except Exception:
         return False
     host = (u.hostname or "").lower()
-    return u.scheme == "https" and u.port in (None, 443) and not u.username and (host in PUSH_HOSTS or host.endswith(PUSH_SUFFIXES))
+    if (p.host or "").lower() != host or p.scheme != "https" or u.port not in (None, 443) or (p.port not in (None, 443)):
+        return False
+    return host in PUSH_HOSTS or host.endswith(PUSH_SUFFIXES)
+
+
+class _NoRedirectSession(requests.Session):
+    """A push service has no reason to redirect; never follow one to somewhere else."""
+
+    def request(self, *args, **kwargs):
+        kwargs["allow_redirects"] = False
+        return super().request(*args, **kwargs)
 
 
 def vapid_keys() -> tuple[str, str]:
@@ -51,6 +72,7 @@ def _send_all(role: str, payload: dict, contact: str) -> None:
     with db.session() as c:
         subs = c.execute("SELECT endpoint, data FROM push_subs WHERE role=?", (role,)).fetchall()
     dead = []
+    session = _NoRedirectSession()
     for s in subs:
         try:
             webpush(
@@ -59,6 +81,7 @@ def _send_all(role: str, payload: dict, contact: str) -> None:
                 vapid_private_key=vapid,
                 vapid_claims={"sub": contact},
                 ttl=3600,
+                requests_session=session,
             )
         except WebPushException as e:
             status = getattr(e.response, "status_code", None)
