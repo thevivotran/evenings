@@ -2,8 +2,8 @@
 import { h, icon, ring, plural, haptic } from '../dom.js';
 import { get, post, patch, del } from '../api.js';
 import { ymd, parse, hhmm, longDay, relDay } from '../dates.js';
-import { state, isHost, statusOf, refresh } from '../store.js';
-import { act, btn, pill, field, input, stepper, chips, toast, openSheet, refreshSheet, closeSheet, confirmSheet } from '../ui.js';
+import { state, isHost, statusOf, refresh, knownPlaces } from '../store.js';
+import { act, btn, pill, field, input, stepper, chips, peopleInput, toast, openSheet, refreshSheet, closeSheet, confirmSheet } from '../ui.js';
 
 const ts = (s) => parse(s.replace(' ', 'T'));
 
@@ -20,13 +20,19 @@ function facts(g) {
   const rows = [
     ['clock', 'When', when],
     g.group_name && ['groups', 'Group', h('span', {}, h('span', { class: 'swatch sm', style: { background: g.group_color } }), g.group_name)],
-    g.location && ['pin', 'Where', g.location],
-    g.attendees && ['people', 'With', g.attendees],
+    (g.location || g.map_url) && ['pin', 'Where', where(g)],
+    g.people.length > 0 && ['people', `With ${g.people.length}`, h('span', { class: 'names' }, g.people.map((n) => h('span', { class: 'name' }, n)))],
     g.ride && ['car', 'Ride home', g.ride],
     g.note && ['note', 'Note', g.note],
   ].filter(Boolean);
   return h('dl', { class: 'facts' }, rows.map(([ic, k, v]) => h('div', { class: 'fact' },
     h('dt', {}, icon(ic, 18), h('span', { class: 'sr' }, k)), h('dd', {}, h('small', {}, k), h('span', {}, v)))));
+}
+
+function where(g) {
+  if (!g.map_url) return g.location;
+  return h('span', { class: 'where' }, g.location && h('span', {}, g.location),
+    h('a', { class: 'map-link', href: g.map_url, target: '_blank', rel: 'noopener noreferrer' }, icon('pin', 15), 'Open in Maps'));
 }
 
 function agreement(g) {
@@ -134,17 +140,28 @@ export function openForm(g, { date } = {}) {
   const endBase = g && g.end ? parse(g.end) : null;
   const f = {
     title: input({ value: g ? g.title : '', placeholder: 'Beers with the boys', maxlength: '120', enterkeyhint: 'next', class: 'big' }),
-    group: chips([{ value: null, label: 'None' }, ...state.groups.map((x) => ({ value: x.id, label: x.name, color: x.color }))], g ? g.group_id : null, { label: 'Group' }),
+    group: chips([{ value: null, label: 'None' }, ...state.groups.map((x) => ({ value: x.id, label: x.name, color: x.color }))], g ? g.group_id : null, {
+      label: 'Group',
+      // Picking a group fills in its usual crew; adjust per evening.
+      onchange: (id) => { const grp = state.groups.find((x) => x.id === id); if (grp) f.who.add(grp.members); },
+    }),
     date: input({ type: 'date', value: ymd(base) }),
     start: input({ type: 'time', value: hhmm(base) }),
     end: input({ type: 'time', value: endBase ? hhmm(endBase) : '' }),
     loc: input({ value: g ? g.location : '', placeholder: 'Bar, someone\'s place…', maxlength: '200' }),
-    who: input({ value: g ? g.attendees : '', placeholder: 'Optional', maxlength: '300' }),
+    map: input({ type: 'url', inputmode: 'url', value: g ? g.map_url : '', placeholder: 'https://maps.app.goo.gl/…', maxlength: '500' }),
+    who: peopleInput({ value: g ? g.people : [], known: state.people, label: 'Who is coming' }),
     ride: input({ value: g ? g.ride : '', placeholder: 'Driver, taxi, Grab…', maxlength: '200' }),
     note: h('textarea', { rows: 3, value: g ? g.note : '', placeholder: 'Anything she should know', maxlength: '1000' }),
   };
+  const places = knownPlaces().slice(0, 8);
+  const placeChips = places.length > 0 && h('div', { class: 'chips scroll' }, places.map((p) => h('button', {
+    type: 'button', class: 'chip', onclick: () => { f.loc.value = p.name; f.map.value = p.map_url || ''; },
+  }, p.map_url && icon('pin', 14), p.name)));
   const save = act(async () => {
     if (!f.title.value.trim()) { f.title.focus(); throw new Error('Give it a title'); }
+    const mapUrl = f.map.value.trim();
+    if (mapUrl && !/^https:\/\/\S+$/i.test(mapUrl)) { f.map.focus(); throw new Error('Paste the link from Google Maps → Share'); }
     if (!f.date.value || !f.start.value) throw new Error('Pick a date and start time');
     const start = `${f.date.value}T${f.start.value}`;
     let end = null;
@@ -155,7 +172,7 @@ export function openForm(g, { date } = {}) {
     }
     const body = {
       title: f.title.value.trim(), group_id: f.group.value, start, end,
-      location: f.loc.value.trim(), attendees: f.who.value.trim(), ride: f.ride.value.trim(), note: f.note.value.trim(),
+      location: f.loc.value.trim(), map_url: mapUrl, people: f.who.value, ride: f.ride.value.trim(), note: f.note.value.trim(),
     };
     if (g) await patch(`/api/gatherings/${g.id}`, body); else await post('/api/gatherings', body);
     closeSheet();
@@ -172,7 +189,9 @@ export function openForm(g, { date } = {}) {
       field('Date', f.date),
       h('div', { class: 'two' }, field('From', f.start), field('Until (optional)', f.end)),
       field('Where', f.loc),
-      field('With', f.who),
+      placeChips,
+      field('Map link (optional)', f.map, { hint: 'In Google Maps: tap the place, Share, Copy link.' }),
+      h('div', { class: 'field' }, h('label', { for: f.who.input.id || (f.who.input.id = 'f-who') }, 'With'), f.who.el),
       field('Ride home', f.ride),
       field('Note', f.note),
       g && g.status !== 'pending' && h('p', { class: 'hint' }, 'Changing the time sends it back for a fresh reply.'),

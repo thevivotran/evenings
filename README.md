@@ -4,7 +4,9 @@ Tiny calendar for friend gatherings, built so the wife can check it.
 
 - **Host** files a request; **wife** approves / declines (with note, conditions, beer limit) or ignores it.
 - During an approved gathering the host taps "start", logs beers by type, then "heading home".
-- **Groups** track how often each crew meets, with an "overdue" nudge against a per-group goal.
+- **Groups** track how often each crew meets, with an "overdue" nudge against a per-group goal. Both of you can set that goal; the host manages the rest (name, colour, members).
+- **People** are picked by name per group and per evening (a group's members fill in automatically), so the Groups tab can show how often you see each person.
+- Places can carry a Google Maps link, shown as "Open in Maps"; past places are offered as one-tap chips.
 - Push notifications (new request, answer, started, limit reached, heading home) and a `.ics` feed for her own calendar app.
 
 ## Run locally

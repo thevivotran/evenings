@@ -86,6 +86,45 @@ export function chips(options, value, { onchange, label = 'Choose' } = {}) {
   return { el: h('div', { class: 'chips', role: 'radiogroup', 'aria-label': label }, els), get value() { return v; }, set(x) { v = x; els.forEach((e, i) => e.setAttribute('aria-checked', String(options[i].value === v))); } };
 }
 
+// Multi-name picker: typed names become removable tokens; known names are offered as one-tap suggestions.
+// `value` also includes a half-typed name, so nothing is lost if Save is tapped mid-word.
+export function peopleInput({ value = [], known = [], placeholder = 'Add a name', label = 'People' } = {}) {
+  let names = [...value];
+  const has = (n) => names.some((x) => x.toLowerCase() === n.toLowerCase());
+  const text = h('input', { autocomplete: 'off', placeholder, maxlength: '60', enterkeyhint: 'done', 'aria-label': label, class: 'people-text' });
+  const chosen = h('span', { class: 'token-list' });
+  const tokens = h('div', { class: 'people-tokens' }, chosen, text); // the text box never moves, so it keeps focus
+  const sugg = h('div', { class: 'chips people-sugg', 'aria-label': 'Suggestions' });
+  const paint = () => {
+    chosen.replaceChildren(...names.map((n) => h('span', { class: 'token' }, h('span', {}, n),
+      h('button', { type: 'button', class: 'token-x', 'aria-label': `Remove ${n}`, onclick: () => { names = names.filter((x) => x !== n); paint(); } }, icon('close', 14)))));
+    const q = text.value.trim().toLowerCase();
+    const opts = known.filter((n) => !has(n) && (!q || n.toLowerCase().includes(q))).slice(0, 8);
+    sugg.replaceChildren(...opts.map((n) => h('button', {
+      type: 'button', class: 'chip', onmousedown: (e) => e.preventDefault(), // keep focus, so blur doesn't commit "Tu" before "Tuan"
+      onclick: () => { push(n); text.value = ''; paint(); text.focus(); },
+    }, `+ ${n}`)));
+    sugg.hidden = !opts.length;
+  };
+  const push = (n) => { n = n.replace(/\s+/g, ' ').trim(); if (n && !has(n)) names.push(n); };
+  const commit = () => { for (const part of text.value.split(',')) push(part); text.value = ''; paint(); };
+  text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); text.focus(); }
+    else if (e.key === 'Backspace' && !text.value && names.length) { names.pop(); paint(); text.focus(); }
+  });
+  text.addEventListener('input', () => { if (text.value.includes(',')) { commit(); text.focus(); } else paint(); });
+  text.addEventListener('blur', () => { if (text.value.trim()) commit(); });
+  tokens.addEventListener('click', (e) => { if (e.target === tokens || e.target === chosen) text.focus(); });
+  paint();
+  return {
+    el: h('div', { class: 'people-input' }, tokens, sugg),
+    input: text,
+    get value() { const typed = text.value.trim(); return typed && !has(typed) ? [...names, typed] : [...names]; },
+    add(list) { for (const n of list) push(n); paint(); },
+    get empty() { return !names.length && !text.value.trim(); },
+  };
+}
+
 export function segmented(options, value, onchange) {
   const els = options.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(k === value), onclick: () => {
     els.forEach((e, i) => e.setAttribute('aria-pressed', String(options[i][0] === k))); onchange(k);

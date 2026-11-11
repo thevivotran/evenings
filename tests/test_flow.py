@@ -203,3 +203,86 @@ def test_frontend_assets_served_fresh():
         for path in ("/static/js/main.js", "/static/js/views/calendar.js", "/static/style.css"):
             r = anon.get(path)
             assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", path
+
+
+# ---------- rhythm, map links, people ----------
+
+def test_wife_can_change_group_rhythm_but_nothing_else(clients):
+    host, wife = clients
+    grp = host.post("/api/groups", json={"name": "Football", "target_days": 7}).json()
+    assert wife.patch(f"/api/groups/{grp['id']}", json={"name": "Renamed"}).status_code == 403
+    r = wife.put(f"/api/groups/{grp['id']}/rhythm", json={"target_days": 30})
+    assert r.status_code == 200 and r.json()["target_days"] == 30 and r.json()["name"] == "Football"
+    assert wife.put(f"/api/groups/{grp['id']}/rhythm", json={"target_days": None}).json()["target_days"] is None
+    assert wife.put("/api/groups/99999/rhythm", json={"target_days": 7}).status_code == 404
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://maps.app.goo.gl/AbCd123", True),
+    ("https://www.google.com/maps/place/Bia+Hoi/@10.77,106.70,17z", True),
+    ("", True),
+    ("javascript:alert(1)", False),
+    ("http://maps.google.com/x", False),
+    ("https:///nohost", False),
+    ("https://maps.app.goo.gl/a b", False),
+])
+def test_map_url_validation(clients, url, ok):
+    host, _ = clients
+    r = host.post("/api/gatherings", json={"title": "Bar", "start": ts(3), "location": "Bia Hoi", "map_url": url})
+    assert (r.status_code == 201) is ok
+    if ok:
+        assert r.json()["map_url"] == url
+
+
+def test_people_on_groups_and_gatherings_and_stats(clients):
+    host, wife = clients
+    grp = host.post("/api/groups", json={"name": "Neighbours", "members": ["Minh", "Lan", "minh"]}).json()
+    assert grp["members"] == ["Lan", "Minh"]  # de-duplicated case-insensitively, sorted
+    assert host.patch(f"/api/groups/{grp['id']}", json={"name": "Neighbours"}).json()["members"] == ["Lan", "Minh"]  # kept
+
+    for d, people in ((-10, ["Minh", "Lan"]), (-3, ["Minh", "Tuan"]), (4, ["Minh"])):
+        g = host.post("/api/gatherings", json={"title": "Hotpot", "group_id": grp["id"], "start": ts(d), "people": people}).json()
+        assert g["people"] == sorted(people) and g["attendees"] == ", ".join(people)
+        wife.post(f"/api/gatherings/{g['id']}/respond", json={"decision": "approved"})
+
+    stats = {p["name"]: p for p in wife.get("/api/stats").json()["people"]}
+    assert stats["Minh"]["meetings"] == 2  # the future one hasn't happened yet
+    assert stats["Lan"]["meetings"] == 1 and stats["Tuan"]["meetings"] == 1
+    assert {"Lan", "Minh", "Tuan"} <= set(wife.get("/api/people").json())
+
+
+def test_legacy_attendees_text_is_split_into_people(clients):
+    host, _ = clients
+    g = host.post("/api/gatherings", json={"title": "Old app", "start": ts(2), "attendees": "An, Binh & Chi and Dung"}).json()
+    assert g["people"] == ["An", "Binh", "Chi", "Dung"]
+
+
+def test_old_database_is_migrated(monkeypatch, tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL DEFAULT '#f59e0b', target_days INTEGER);
+        CREATE TABLE beer_types (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, abv REAL, size_ml INTEGER, active INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE gatherings (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, group_id INTEGER, start TEXT NOT NULL, end TEXT,
+            location TEXT NOT NULL DEFAULT '', attendees TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', ride TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending', wife_comment TEXT NOT NULL DEFAULT '', conditions TEXT NOT NULL DEFAULT '', drink_limit INTEGER,
+            responded_at TEXT, started_at TEXT, ended_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')));
+        INSERT INTO beer_types(name) VALUES ('Tiger');
+        INSERT INTO gatherings(title, start, attendees) VALUES ('Legacy', '2026-01-01T19:00', 'Hai, Phong');
+    """)
+    old.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+    with TestClient(app) as c:
+        assert c.post("/api/login", json={"role": "host", "pin": "hhhh"}).status_code == 200
+        g = c.get("/api/gatherings").json()[0]
+        assert g["people"] == ["Hai", "Phong"] and g["map_url"] == ""
+        names = {b["name"] for b in c.get("/api/beer-types").json()}
+        assert {"Tiger", "Tiger Crystal tall", "Budweiser short"} <= names
+        bud = next(b for b in c.get("/api/beer-types").json() if b["name"] == "Budweiser short")
+        c.delete(f"/api/beer-types/{bud['id']}")
+    db.init()  # a restart must not bring a removed seed beer back
+    with TestClient(app) as c:
+        c.post("/api/login", json={"role": "host", "pin": "hhhh"})
+        assert "Budweiser short" not in {b["name"] for b in c.get("/api/beer-types").json()}

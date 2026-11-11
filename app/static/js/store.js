@@ -7,7 +7,7 @@ export const state = {
   tab: 'calendar',
   month: (() => { const d = new Date(); d.setDate(1); return d; })(),
   selected: ymd(new Date()),
-  gatherings: [], groups: [], beerTypes: [], stats: null,
+  gatherings: [], groups: [], beerTypes: [], people: [], stats: null,
   loaded: false,
 };
 
@@ -18,12 +18,12 @@ export const onChange = (fn) => listeners.add(fn);
 export const emit = () => listeners.forEach((fn) => fn());
 
 export async function loadAll() {
-  const [g, groups, bt] = await Promise.all([get('/api/gatherings'), get('/api/groups'), get('/api/beer-types')]);
-  Object.assign(state, { gatherings: g, groups, beerTypes: bt, loaded: true });
+  const [g, groups, bt, people] = await Promise.all([get('/api/gatherings'), get('/api/groups'), get('/api/beer-types'), get('/api/people')]);
+  Object.assign(state, { gatherings: g, groups, beerTypes: bt, people, loaded: true });
 }
 
 export async function refresh({ groups = false, beerTypes = false } = {}) {
-  const jobs = [get('/api/gatherings').then((g) => { state.gatherings = g; })];
+  const jobs = [get('/api/gatherings').then((g) => { state.gatherings = g; }), get('/api/people').then((p) => { state.people = p; }).catch(() => {})];
   if (groups) jobs.push(get('/api/groups').then((x) => { state.groups = x; }));
   if (beerTypes) jobs.push(get('/api/beer-types').then((x) => { state.beerTypes = x; }));
   if (state.tab === 'groups' || state.stats) jobs.push(get('/api/stats').then((s) => { state.stats = s; }).catch(() => {}));
@@ -51,6 +51,19 @@ export const upcoming = (n = 4) => {
   const now = nowStr();
   return state.gatherings.filter((g) => g.status === 'approved' && !g.started_at && g.start >= now).slice(0, n);
 };
+// Places used before (newest first), so a bar and its map link only need typing once.
+export function knownPlaces() {
+  const out = new Map();
+  for (const g of [...state.gatherings].reverse()) {
+    const name = g.location.trim();
+    if (!name) continue;
+    const k = name.toLowerCase();
+    if (!out.has(k)) out.set(k, { name, map_url: g.map_url });
+    else if (!out.get(k).map_url && g.map_url) out.get(k).map_url = g.map_url;
+  }
+  return [...out.values()];
+}
+
 export function byDay() {
   const out = {};
   for (const g of state.gatherings) (out[g.start.slice(0, 10)] ||= []).push(g);
